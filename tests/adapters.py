@@ -13,7 +13,7 @@ import regex as re
 import tqdm
 from transformer.tokenizer import Tokenizer
 from transformer.tokenizer import run_train_bpe as _run_train_bpe
-from transformer.transformer import Linear, Embedding, RMSNorm
+from transformer.transformer import Linear, Embedding, RMSNorm, SwiGLU, RoPE
 
 def run_linear(
     d_in: int,
@@ -90,7 +90,9 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    layer = SwiGLU(d_model=d_model, d_ff=d_ff)
+    layer.load_state_dict({"w1.W": w1_weight, "w2.W": w2_weight, "w3.W": w3_weight})
+    return layer(x=in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -207,7 +209,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    layer = RoPE(theta=theta, d_k=d_k, max_seq_len=max_seq_len)
+    return layer(x=in_query_or_key, token_positions=token_positions)
 
 
 def run_transformer_block(
