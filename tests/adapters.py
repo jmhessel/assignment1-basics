@@ -13,7 +13,7 @@ import regex as re
 import tqdm
 from transformer.tokenizer import Tokenizer
 from transformer.tokenizer import run_train_bpe as _run_train_bpe
-from transformer.transformer import Linear, Embedding, RMSNorm, SwiGLU, RoPE
+from transformer.transformer import Linear, Embedding, RMSNorm, SwiGLU, RoPE, Softmax, SDPA
 
 def run_linear(
     d_in: int,
@@ -113,6 +113,8 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
+    layer = SDPA()
+    return layer(Q=Q, K=K, V=V, mask=mask)
     raise NotImplementedError
 
 
@@ -443,6 +445,8 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
+    layer = Softmax()
+    return layer(in_features=in_features, dim=dim)
     raise NotImplementedError
 
 

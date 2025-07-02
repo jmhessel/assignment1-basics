@@ -99,3 +99,30 @@ class RoPE(torch.nn.Module):
         # now we need to interleave them back
         return rearrange(torch.view_as_real(rot), "... seq dk2 two -> ... seq (dk2 two)")
 
+
+class Softmax(torch.nn.Module):
+    @staticmethod
+    def _forward(in_features: torch.Tensor, dim: int):
+        maxes = torch.max(input=in_features, dim=dim, keepdim=True).values
+        in_features -= maxes
+        exps = torch.exp(in_features)
+        normalizers = torch.sum(input=exps, dim=dim, keepdim=True)
+        return exps / normalizers
+   
+    def forward(self, in_features: torch.Tensor, dim: int):
+        return Softmax._forward(in_features=in_features, dim=dim)
+    
+         
+
+class SDPA(torch.nn.Module):
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor):
+        dim = Q.size()[-1]
+        logits = einsum(Q, K, '... queries d, ... keys d -> ... queries keys')
+        logits /= math.sqrt(dim)
+
+        mask_val = (~mask).float() * -999999
+        logits = logits + mask_val
+
+        sms = Softmax._forward(logits, dim=-1)
+        return einsum(sms, V, "... queries keys, ... keys d -> ... queries d")
+
