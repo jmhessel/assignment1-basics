@@ -13,7 +13,7 @@ import regex as re
 import tqdm
 from transformer.tokenizer import Tokenizer
 from transformer.tokenizer import run_train_bpe as _run_train_bpe
-from transformer.transformer import Linear, Embedding, RMSNorm, SwiGLU, RoPE, Softmax, SDPA
+from transformer.transformer import Linear, Embedding, RMSNorm, SwiGLU, RoPE, Softmax, SDPA, MultiheadSelfAttention, TransformerBlock
 
 def run_linear(
     d_in: int,
@@ -115,7 +115,6 @@ def run_scaled_dot_product_attention(
     """
     layer = SDPA()
     return layer(Q=Q, K=K, V=V, mask=mask)
-    raise NotImplementedError
 
 
 def run_multihead_self_attention(
@@ -149,7 +148,13 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    layer = MultiheadSelfAttention(d_model=d_model, num_heads=num_heads, use_rope=False)
+    layer.load_state_dict({"q_proj_weight.W": q_proj_weight,
+                           "k_proj_weight.W": k_proj_weight,
+                           "v_proj_weight.W": v_proj_weight,
+                           "o_proj_weight.W": o_proj_weight})
+                           
+    return layer(in_features=in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -189,7 +194,13 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    layer = MultiheadSelfAttention(d_model=d_model, num_heads=num_heads)
+    layer.load_state_dict({"q_proj_weight.W": q_proj_weight,
+                           "k_proj_weight.W": k_proj_weight,
+                           "v_proj_weight.W": v_proj_weight,
+                           "o_proj_weight.W": o_proj_weight})
+                           
+    return layer(in_features=in_features, token_positions=token_positions)
 
 
 def run_rope(
@@ -285,7 +296,15 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    layer = TransformerBlock(d_model=d_model, num_heads=num_heads, d_ff=d_ff, max_seq_len=max_seq_len, theta=theta)
+    want = ["ln1.gain", "ln2.gain", "attn.k_proj_weight.W", "attn.q_proj_weight.W", "attn.v_proj_weight.W", "attn.o_proj_weight.W", "ffn.w1.W", "ffn.w2.W", "ffn.w3.W"]
+    have = ["ln1.weight", "ln2.weight", "attn.q_proj.weight", "attn.k_proj.weight", "attn.v_proj.weight", "attn.output_proj.weight", "ffn.w1.weight", "ffn.w2.weight", "ffn.w3.weight"]
+    for w, h in zip(want, have):
+        weights[w] = weights[h]
+        del weights[h]
+    layer.load_state_dict(weights)
+    return layer(in_features=in_features)
+    
 
 
 def run_transformer_lm(

@@ -95,7 +95,8 @@ class RoPE(torch.nn.Module):
         x_comp = torch.complex(real=x[..., ::2], imag=x[..., 1::2])
 
         # now elementwise to rotate
-        rot = einsum(x_comp, c_pos_embs, "... seq dk2, ... seq dk2 -> ... seq dk2")
+        rot = x_comp * c_pos_embs
+
         # now we need to interleave them back
         return rearrange(torch.view_as_real(rot), "... seq dk2 two -> ... seq (dk2 two)")
 
@@ -115,14 +116,78 @@ class Softmax(torch.nn.Module):
          
 
 class SDPA(torch.nn.Module):
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor):
+    @staticmethod
+    def _forward(Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor):
         dim = Q.size()[-1]
         logits = einsum(Q, K, '... queries d, ... keys d -> ... queries keys')
         logits /= math.sqrt(dim)
 
-        mask_val = (~mask).float() * -999999
+        mask_val = (~mask).float() * -999999999
         logits = logits + mask_val
 
         sms = Softmax._forward(logits, dim=-1)
         return einsum(sms, V, "... queries keys, ... keys d -> ... queries d")
+        
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor):
+        return SDPA._forward(Q=Q, K=K, V=V, mask=mask)
+        
 
+class MultiheadSelfAttention(torch.nn.Module):
+    def __init__(self, d_model: int, num_heads: int, use_rope:bool=True, theta:float=10000, max_seq_len:int=4096, device=None, dtype=None):
+        super().__init__()
+        self.k_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.q_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.o_proj_weight = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.use_rope = use_rope
+        if use_rope:
+            self.rope = RoPE(theta=theta, d_k=d_model//num_heads, max_seq_len=max_seq_len, device=device)
+        self.num_heads = num_heads
+        self.device = device
+        self.dtype = dtype
+        
+    def forward(self, in_features: torch.Tensor, token_positions: torch.Tensor | None = None):
+        shape_in = in_features.size()
+        seq_len = shape_in[-2]
+        d = shape_in[-1]
+        
+        k = self.k_proj_weight(in_features)
+        q = self.q_proj_weight(in_features)
+        v = self.v_proj_weight(in_features)
+
+        # split by head
+        k = rearrange(k, "... seq (h dh) -> ... h seq dh", h=self.num_heads)
+        q = rearrange(q, "... seq (h dh) -> ... h seq dh", h=self.num_heads)
+        v = rearrange(v, "... seq (h dh) -> ... h seq dh", h=self.num_heads)
+
+        if self.use_rope:
+            if token_positions is None:
+                token_positions = rearrange(torch.arange(0, seq_len, dtype=torch.int), 'd -> () d')
+            k = self.rope(x=k, token_positions=token_positions)
+            q = self.rope(x=q, token_positions=token_positions)
+
+        # get mask, then do sdpa
+        mask = torch.tril(torch.ones(size=(seq_len, seq_len), device=self.device, dtype=torch.bool))
+
+        # ... h seq dh
+        result = SDPA._forward(Q=q, K=k, V=v, mask=mask)
+
+        # concat then project
+        result = rearrange(result, "... h seq dh -> ... seq (h dh)")
+        
+        result = self.o_proj_weight(result)
+
+        return result
+
+
+class TransformerBlock(torch.nn.Module):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float, device=None, dtype=None):
+        super().__init__()
+        self.ln1 = RMSNorm(d_model=d_model, device=device, dtype=dtype)
+        self.ln2 = RMSNorm(d_model=d_model, device=device, dtype=dtype)
+        self.attn = MultiheadSelfAttention(d_model=d_model, num_heads=num_heads, theta=theta, max_seq_len=max_seq_len, device=device, dtype=dtype)
+        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff, device=device, dtype=dtype)
+
+    def forward(self, in_features: torch.Tensor):
+        in_features = in_features + self.attn(self.ln1(in_features))
+        return in_features + self.ffn(self.ln2(in_features))
